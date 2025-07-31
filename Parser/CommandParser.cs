@@ -26,6 +26,7 @@ namespace Parser
                 object result = type switch
                 {
                     "manage_gameobject" => GameObjectHandler.Handle(@params),
+                    "manage_asset" => AssetHandler.Handle(@params),
                     _ => Response.Error($"Unknown type '{type}'")
                 };
 

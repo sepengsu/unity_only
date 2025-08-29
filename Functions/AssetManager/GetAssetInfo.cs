@@ -1,7 +1,7 @@
+// FILE: Assets/Scripts/Functions/Asset/GetAssetInfo.cs
 using System;
-using System.IO;
-using Newtonsoft.Json.Linq;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Helpers;
 
@@ -11,44 +11,58 @@ namespace Functions.AssetManager
     {
         public static object Execute(JObject @params)
         {
-            string path = @params["path"]?.ToString();
-            bool generatePreview = @params["generatePreview"]?.ToObject<bool>() ?? false;
-
-            if (string.IsNullOrEmpty(path))
-                return Response.Error("'path' is required for get_info.");
-
-            string fullPath = Path.Combine(Application.dataPath, "Resources", path) + ".prefab";
-            if (!File.Exists(fullPath))
-                return Response.Error($"Asset not found at path: {fullPath}");
-
-            try
+            return MainThreadDispatcher.Run(() =>
             {
-                // Try to load the object
-                string resourcePath = path.Replace("\\", "/").Replace(".prefab", "");
-                GameObject asset = Resources.Load<GameObject>(resourcePath);
-                if (asset == null)
-                    return Response.Error($"Failed to load asset at Resources/{resourcePath}");
+                string rawPath = @params["path"]?.ToString();
+                bool generatePreview = @params["generatePreview"]?.ToObject<bool?>() ?? false; // runtime: ignored
 
-                var components = asset.GetComponents<Component>()
-                    .Select(c => c.GetType().FullName)
+                if (string.IsNullOrWhiteSpace(rawPath))
+                    return Response.Error("'path' is required for get_info.");
+
+                // Normalize to Resources-relative path without extension
+                string resourcePath = NormalizeResourcesPath(rawPath);
+
+                // Load prefab from Resources (engine/runtime only)
+                GameObject prefab = Resources.Load<GameObject>(resourcePath);
+                if (prefab == null)
+                    return Response.Error($"Resource not found at '{resourcePath}' (under a Resources folder).");
+
+                var components = prefab.GetComponents<Component>()
+                    .Select(c => c != null ? c.GetType().FullName : "MissingComponent")
                     .ToList();
 
                 var info = new JObject
                 {
-                    ["name"] = asset.name,
-                    ["path"] = path,
+                    ["name"] = prefab.name,
+                    ["path"] = resourcePath,       // Resources-relative path (no extension)
                     ["type"] = "GameObject",
                     ["componentTypes"] = JArray.FromObject(components),
-                    ["lastModified"] = File.GetLastWriteTimeUtc(fullPath).ToString("o"),
-                    ["sizeBytes"] = new FileInfo(fullPath).Length
                 };
 
+                // Note: generatePreview is Editor-only (AssetPreview). Ignored at runtime.
                 return Response.Success("Asset info retrieved.", info);
-            }
-            catch (Exception e)
-            {
-                return Response.Error($"Error getting info for asset '{path}': {e.Message}");
-            }
+            });
+        }
+
+        private static string NormalizeResourcesPath(string input)
+        {
+            // unify slashes & trim
+            string p = input.Replace("\\", "/").Trim().TrimStart('/');
+
+            // strip extension if provided
+            if (p.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                p = p.Substring(0, p.Length - ".prefab".Length);
+
+            // strip leading Resources roots
+            const string assetsRes = "assets/resources/";
+            const string resources = "resources/";
+            string pl = p.ToLowerInvariant();
+            if (pl.StartsWith(assetsRes))
+                p = p.Substring(assetsRes.Length);
+            else if (pl.StartsWith(resources))
+                p = p.Substring(resources.Length);
+
+            return p;
         }
     }
 }

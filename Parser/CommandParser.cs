@@ -27,7 +27,8 @@ namespace Parser
                 {
                     "manage_gameobject" => GameObjectHandler.Handle(@params),
                     "manage_asset" => AssetHandler.Handle(@params),
-                    "manage_ik" => IKHandler.Handle(@params),
+                    "manage_scene" => SceneHandler.Handle(@params),
+                    "manage_path" => PathHandler.Handle(@params),
                     _ => Response.Error($"Unknown type '{type}'")
                 };
 

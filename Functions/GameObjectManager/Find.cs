@@ -1,3 +1,4 @@
+// FILE: Assets/Scripts/Functions/GameObject/Find.cs
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -14,58 +15,62 @@ namespace Functions.GameObjectManager
         {
             return MainThreadDispatcher.Run(() =>
             {
-                string target = data["target"]?.ToString();
-                string searchMethod = data["searchMethod"]?.ToString()?.ToLower() ?? "by_name";
-                bool findAll = data["findAll"]?.ToObject<bool>() ?? false;
-                bool searchInactive = data["searchInactive"]?.ToObject<bool>() ?? true;
-                bool searchInChildren = data["searchInChildren"]?.ToObject<bool>() ?? false;
-
-                if (string.IsNullOrEmpty(target))
+                // ✅ target 필수
+                string query = data["target"]?.ToString();
+                if (string.IsNullOrWhiteSpace(query))
                     return Response.Error("Missing 'target' parameter.");
 
-                List<GameObject> results = new();
+                string searchMethod   = data["searchMethod"]?.ToString()?.ToLowerInvariant() ?? "by_name";
+                bool findAll          = data["findAll"]?.ToObject<bool?>()          ?? false;
+                bool searchInactive   = data["searchInactive"]?.ToObject<bool?>()    ?? true;
+                bool searchInChildren = data["searchInChildren"]?.ToObject<bool?>()  ?? false;
 
-                GameObject[] allObjects = GameObject.FindObjectsOfType<GameObject>(searchInactive);
+                // 검색 풀 구성: 자식 포함 여부에 따라 전체/루트만
+                IEnumerable<GameObject> pool = searchInChildren
+                    ? GameObject.FindObjectsOfType<GameObject>(searchInactive)
+                    : GetRootObjects(searchInactive);
+
+                List<GameObject> results = new();
 
                 switch (searchMethod)
                 {
                     case "by_name":
-                        results = allObjects.Where(go => go.name == target).ToList();
+                        results = pool.Where(go => go.name == query).ToList();
                         break;
 
                     case "by_tag":
-                        results = allObjects.Where(go => go.CompareTag(target)).ToList();
+                        results = pool.Where(go => SafeCompareTag(go, query)).ToList();
                         break;
 
                     case "by_layer":
-                        if (int.TryParse(target, out int layerIndex))
-                            results = allObjects.Where(go => go.layer == layerIndex).ToList();
+                        if (int.TryParse(query, out int layerIndex))
+                            results = pool.Where(go => go.layer == layerIndex).ToList();
                         else
                         {
-                            int namedLayer = LayerMask.NameToLayer(target);
+                            int namedLayer = LayerMask.NameToLayer(query);
                             if (namedLayer != -1)
-                                results = allObjects.Where(go => go.layer == namedLayer).ToList();
+                                results = pool.Where(go => go.layer == namedLayer).ToList();
                         }
                         break;
 
                     case "by_component":
-                        Type compType = Type.GetType("UnityEngine." + target + ", UnityEngine");
+                        Type compType = ResolveType(query);
                         if (compType != null)
-                            results = allObjects.Where(go => go.GetComponent(compType) != null).ToList();
+                            results = pool.Where(go => go.GetComponent(compType) != null).ToList();
                         break;
 
                     case "by_path":
-                        foreach (var root in GetRootObjects())
+                        results = new List<GameObject>();
+                        foreach (var root in GetRootObjects(searchInactive))
                         {
-                            Transform found = root.transform.Find(target);
-                            if (found != null)
-                                results.Add(found.gameObject);
+                            var found = root.transform.Find(query);
+                            if (found != null) results.Add(found.gameObject);
                         }
                         break;
 
                     case "by_id":
-                        if (int.TryParse(target, out int id))
-                            results = allObjects.Where(go => go.GetInstanceID() == id).ToList();
+                        if (int.TryParse(query, out int id))
+                            results = pool.Where(go => go.GetInstanceID() == id).ToList();
                         break;
 
                     default:
@@ -78,19 +83,52 @@ namespace Functions.GameObjectManager
                 if (!findAll && results.Count > 1)
                     results = new List<GameObject> { results[0] };
 
-                var serialized = results.Select(go => Utils.GetGameObjectData(go)).ToList();
+                var serialized = results.Select(Utils.GetGameObjectData).ToList();
                 return Response.Success($"Found {serialized.Count} GameObject(s).", serialized);
-            }).Result;
+            });
         }
 
-        private static List<GameObject> GetRootObjects()
+        private static bool SafeCompareTag(GameObject go, string tag)
         {
-            var roots = new List<GameObject>();
-            foreach (var go in GameObject.FindObjectsOfType<GameObject>(true))
+            try { return go.CompareTag(tag); }
+            catch { return false; } // 정의되지 않은 태그 예외 방지
+        }
+
+        private static Type ResolveType(string nameOrFullName)
+        {
+            if (string.IsNullOrWhiteSpace(nameOrFullName)) return null;
+
+            // 1) 풀네임 시도
+            var t = Type.GetType(nameOrFullName);
+            if (t != null) return t;
+
+            // 2) UnityEngine.* 시도
+            t = Type.GetType("UnityEngine." + nameOrFullName + ", UnityEngine");
+            if (t != null) return t;
+
+            // 3) 모든 어셈블리에서 탐색 (사용자 스크립트 포함)
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
+                try
+                {
+                    t = asm.GetType(nameOrFullName);
+                    if (t != null) return t;
+
+                    t = asm.GetTypes().FirstOrDefault(tp => tp.Name == nameOrFullName);
+                    if (t != null) return t;
+                }
+                catch { /* reflection 이슈 무시 */ }
+            }
+            return null;
+        }
+
+        private static List<GameObject> GetRootObjects(bool includeInactive)
+        {
+            var all = GameObject.FindObjectsOfType<GameObject>(includeInactive);
+            var roots = new List<GameObject>();
+            foreach (var go in all)
                 if (go.transform.parent == null)
                     roots.Add(go);
-            }
             return roots;
         }
     }
